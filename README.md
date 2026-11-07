@@ -4,7 +4,7 @@
 Japanese, and get answers that link to the exact page and passage. It comes with an evaluation
 dashboard that measures retrieval and answer quality.
 
-> Status: Phase 0 (project setup). See the roadmap below.
+> Status: Phase 1 (ingestion) done. See the roadmap below.
 
 ## Stack
 
@@ -29,7 +29,11 @@ uv sync
 uv run alembic upgrade head       # create the database schema
 uv run uvicorn app.main:app --reload
 
-# in another terminal
+# in another terminal: the ingestion worker (first start downloads bge-m3, about 2.3 GB)
+cd backend
+uv run arq app.worker.WorkerSettings
+
+# in a third terminal
 cd frontend
 npm install
 npm run dev                       # http://localhost:5173
@@ -50,6 +54,21 @@ curl -X POST http://localhost:8000/api/llm/check
 To run free and offline instead, install [Ollama](https://ollama.com), pull a small model, and set
 `LLM_PROVIDER=ollama` and `LLM_MODEL=qwen2.5:3b` in `.env`. Expect slow answers without a GPU.
 
+## How ingestion works
+
+1. **Upload** (`POST /api/documents`): the PDF is checked, de-duplicated by SHA-256, saved
+   under `data/uploads/`, and queued in Redis.
+2. **Parse** (`app/ingest/pdf_parser.py`): PyMuPDF extracts text with font sizes. Headings come
+   from the PDF outline, or from font size, bold text and numbering ("2.1", "第3章"). Running
+   headers, footers and page numbers are removed.
+3. **Chunk** (`app/ingest/chunker.py`): text is split by section into chunks of about 350 tokens
+   with about 50 tokens of sentence overlap. Chunks never cross sections, keep page numbers for
+   citations, and skip the reference list.
+4. **Embed** (`app/ingest/embedder.py`): bge-m3 runs on CPU. Each chunk is embedded together with
+   the paper title and section path, and stored in pgvector with an HNSW index.
+
+The Library page shows live progress. "View chunks" shows exactly what search will see.
+
 ## Tests and linting
 
 ```bash
@@ -60,7 +79,7 @@ cd frontend && npm run lint && npm run build
 ## Roadmap
 
 - [x] **Phase 0**: Setup: repo, Docker, FastAPI, React, CI
-- [ ] **Phase 1**: Ingestion: PDF parsing, chunking by heading, bge-m3 embeddings, background jobs
+- [x] **Phase 1**: Ingestion: PDF parsing, chunking by heading, bge-m3 embeddings, background jobs
 - [ ] **Phase 2**: Retrieval: hybrid search (pgvector + PGroonga, merged with RRF) + reranker
 - [ ] **Phase 3**: Answers with citations: streaming, chat history, JP ⇄ EN
 - [ ] **Phase 4**: Frontend: library, chat, PDF viewer with citation highlights, auth

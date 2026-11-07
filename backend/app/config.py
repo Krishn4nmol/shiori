@@ -1,7 +1,10 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -12,8 +15,8 @@ class Settings(BaseSettings):
     app_name: str = "Shiori"
     environment: Literal["dev", "test", "prod"] = "dev"
 
-    database_url: str = "postgresql+asyncpg://shiori:shiori@localhost:5432/shiori"
-    redis_url: str = "redis://localhost:6379/0"
+    database_url: str = "postgresql+asyncpg://shiori:shiori@127.0.0.1:5432/shiori"
+    redis_url: str = "redis://127.0.0.1:6379/0"
 
     # LLM provider: "anthropic" (Anthropic API) or "ollama" (free, local)
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"
@@ -23,8 +26,18 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
 
-    # Embeddings run locally on CPU
+    # Embeddings run locally on CPU. embedding_dim must match the model (bge-m3: 1024)
+    # and the vector column in the database.
     embedding_model: str = "BAAI/bge-m3"
+    embedding_dim: int = 1024
+    embedding_batch_size: int = 8
+    embedding_max_seq_length: int = 512
+
+    # Ingestion
+    storage_dir: Path = REPO_ROOT / "data" / "uploads"
+    max_upload_mb: int = 50
+    chunk_target_tokens: int = 350
+    chunk_overlap_tokens: int = 50
 
     cors_origins: list[str] = ["http://localhost:5173"]
 

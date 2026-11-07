@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import health, llm
+from app.api import documents, health, llm
 from app.config import get_settings
 
 settings = get_settings()
@@ -17,3 +17,4 @@ app.add_middleware(
 )
 app.include_router(health.router, prefix="/api")
 app.include_router(llm.router, prefix="/api")
+app.include_router(documents.router, prefix="/api")
