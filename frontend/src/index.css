@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, sans-serif;
+  --color-shiori-50: #fdf6f0;
+  --color-shiori-500: #c2410c;
+  --color-shiori-700: #9a3412;
+}
