@@ -104,7 +104,9 @@ def _to_llm_error(err: anthropic.APIError) -> LLMError:
     if isinstance(err, anthropic.APIStatusError):
         if err.status_code == 400 and "credit" in str(err.message).lower():
             return LLMError("Anthropic API credit balance is too low. Add credit in the Console.")
-        return LLMError(f"Anthropic API error ({err.status_code}).", retryable=err.status_code >= 500)
+        return LLMError(
+            f"Anthropic API error ({err.status_code}).", retryable=err.status_code >= 500
+        )
     if isinstance(err, anthropic.APIConnectionError):
         return LLMError("Could not reach the Anthropic API. Check your connection.", retryable=True)
     return LLMError("Unexpected Anthropic API error.")

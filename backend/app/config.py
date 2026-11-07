@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 8
     embedding_max_seq_length: int = 512
 
+    # Retrieval
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_enabled: bool = True
+    search_candidates: int = 40  # per method (vector, keyword) before fusion
+    # Top fused results the reranker re-scores. On a laptop CPU each costs ~0.15 s.
+    rerank_candidates: int = 12
+    # bfloat16 halves reranking time on modern CPUs with the same ranking quality.
+    reranker_bf16: bool = True
+    # Reranker scores below this mean "does not answer the question". Measured on real
+    # queries: right answers scored 0.05-0.8, unrelated passages below 0.001.
+    min_rerank_score: float = 0.01
+    preload_models: bool = True  # load models at API startup instead of on first search
+
     # Ingestion
     storage_dir: Path = REPO_ROOT / "data" / "uploads"
     max_upload_mb: int = 50

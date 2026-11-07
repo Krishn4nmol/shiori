@@ -4,7 +4,7 @@
 Japanese, and get answers that link to the exact page and passage. It comes with an evaluation
 dashboard that measures retrieval and answer quality.
 
-> Status: Phase 1 (ingestion) done. See the roadmap below.
+> Status: Phase 2 (hybrid search) done. See the roadmap below.
 
 ## Stack
 
@@ -12,9 +12,9 @@ dashboard that measures retrieval and answer quality.
 | ---------- | -------------------------------------------------------------------------- |
 | Frontend   | React 19, Vite, TypeScript, Tailwind CSS                                    |
 | Backend    | FastAPI (Python 3.11, uv), SQLAlchemy (async), Alembic                      |
-| Database   | PostgreSQL 17 + pgvector (PGroonga for Japanese keyword search in Phase 2)  |
+| Database   | PostgreSQL 17 + pgvector, full-text index with EN words + JA bigrams     |
 | Queue      | Redis + background worker (Phase 1)                                         |
-| AI         | bge-m3 embeddings (local CPU), bge-reranker, Anthropic API or Ollama           |
+| AI         | bge-m3 embeddings, bge-reranker-v2-m3 (local CPU), Anthropic API or Ollama |
 
 ## Run locally
 
@@ -69,6 +69,29 @@ To run free and offline instead, install [Ollama](https://ollama.com), pull a sm
 
 The Library page shows live progress. "View chunks" shows exactly what search will see.
 
+## How search works
+
+`POST /api/search` (and the **Search** tab) runs three steps:
+
+1. **Vector search**: the question is embedded with bge-m3 and compared with every chunk by
+   cosine similarity (pgvector HNSW index). This finds passages with the same meaning, even in
+   the other language: a Japanese question can rank an English passage first.
+2. **Keyword search**: exact terms through a Postgres GIN index. English is indexed as words;
+   Japanese as overlapping 2-character pieces plus single kanji (鳥取砂丘 → 鳥取, 取砂, 砂丘),
+   with hiragana-only pieces dropped (grammar and furigana). This catches names, numbers and
+   rare terms that vectors blur. It does the job PGroonga would, without a custom Postgres build.
+3. **Fusion and reranking**: the two ranked lists are merged with Reciprocal Rank Fusion
+   (`1 / (60 + rank)`), then the top 12 are re-scored by the bge-reranker-v2-m3
+   cross-encoder (bfloat16 on CPU, about 3 s).
+
+4. **Relevance cutoff**: reranked results scoring below `MIN_RERANK_SCORE` (default 0.01) are
+   hidden. On real queries, right answers scored 0.05–0.8 and unrelated passages below 0.001,
+   so a question nothing answers ("What is the weather in Osaka?") returns
+   "No passage in your papers answers this" instead of 8 unrelated passages.
+
+Each result reports its vector rank, keyword rank, fused score, rerank score and per-stage
+timings, so ranking decisions can be inspected and later evaluated (Phase 6).
+
 ## Tests and linting
 
 ```bash
@@ -80,7 +103,7 @@ cd frontend && npm run lint && npm run build
 
 - [x] **Phase 0**: Setup: repo, Docker, FastAPI, React, CI
 - [x] **Phase 1**: Ingestion: PDF parsing, chunking by heading, bge-m3 embeddings, background jobs
-- [ ] **Phase 2**: Retrieval: hybrid search (pgvector + PGroonga, merged with RRF) + reranker
+- [x] **Phase 2**: Retrieval: hybrid search (pgvector + keyword index, merged with RRF) + reranker
 - [ ] **Phase 3**: Answers with citations: streaming, chat history, JP ⇄ EN
 - [ ] **Phase 4**: Frontend: library, chat, PDF viewer with citation highlights, auth
 - [ ] **Phase 5**: Observability: per-query traces (retrieval, prompt, tokens, cost, latency)

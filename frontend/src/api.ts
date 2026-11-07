@@ -30,6 +30,47 @@ export type Chunk = {
   token_count: number
 }
 
+export type SearchMode = 'hybrid' | 'vector' | 'keyword'
+
+export type SearchHit = {
+  chunk_id: string
+  document_id: string
+  document_title: string
+  text: string
+  section: string | null
+  page_start: number
+  page_end: number
+  language: string
+  vector_rank: number | null
+  vector_score: number | null
+  keyword_rank: number | null
+  keyword_score: number | null
+  rrf_score: number
+  rerank_score: number | null
+}
+
+export type SearchResponse = {
+  query: string
+  mode: SearchMode
+  reranked: boolean
+  candidates: number
+  min_score: number | null
+  filtered_out: number
+  best_rerank_score: number | null
+  timings_ms: Record<string, number>
+  hits: SearchHit[]
+}
+
+export type SearchRequest = {
+  query: string
+  k?: number
+  mode?: SearchMode
+  rerank?: boolean
+  document_ids?: string[]
+  language?: 'en' | 'ja'
+  min_score?: number
+}
+
 export type Health = {
   status: string
   version: string
@@ -60,5 +101,12 @@ export const api = {
     request<{ total: number; items: Chunk[] }>(
       `/documents/${id}/chunks?offset=${offset}&limit=${limit}`,
     ),
-  fileUrl: (id: string) => `/api/documents/${id}/file`,
+  fileUrl: (id: string, page?: number) =>
+    `/api/documents/${id}/file${page ? `#page=${page}` : ''}`,
+  search: (body: SearchRequest) =>
+    request<SearchResponse>('/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 }

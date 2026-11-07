@@ -5,7 +5,8 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Computed, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import get_settings
@@ -71,6 +72,11 @@ class Chunk(Base):
     language: Mapped[str] = mapped_column(String(8))
     token_count: Mapped[int] = mapped_column(Integer)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    # Keyword search: tokens from app.retrieval.tokenize, indexed as-is (no Postgres parsing)
+    search_text: Mapped[str] = mapped_column(Text, server_default="")
+    search_tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("array_to_tsvector(string_to_array(search_text, ' '))", persisted=True)
+    )
 
     document: Mapped[Document] = relationship(back_populates="chunks")
 
@@ -83,4 +89,5 @@ class Chunk(Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_chunks_search_tsv", "search_tsv", postgresql_using="gin"),
     )

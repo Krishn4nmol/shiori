@@ -13,6 +13,7 @@ from app.ingest.chunker import ChunkDraft, chunk_blocks
 from app.ingest.embedder import Embedder
 from app.ingest.pdf_parser import parse_pdf
 from app.models import Chunk, Document, DocumentStatus
+from app.retrieval.tokenize import search_text
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ async def ingest_document(
                     language=d.language,
                     token_count=d.token_count,
                     embedding=vec,
+                    search_text=search_text(embedding_input(doc, d)),
                 )
                 for i, (d, vec) in enumerate(zip(drafts, vectors, strict=True))
             )
