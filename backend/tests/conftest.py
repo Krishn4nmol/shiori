@@ -55,5 +55,9 @@ async def clean_db(database: None) -> AsyncIterator[None]:
     from app.db import engine
 
     async with engine.begin() as db:
-        await db.execute(text("TRUNCATE documents, chunks CASCADE"))
+        await db.execute(text("TRUNCATE documents, chunks, conversations, messages CASCADE"))
     yield
+
+
+# Shared fixtures. Imported last: they import app modules, which must see the settings above.
+from tests.fakes import library  # noqa: E402,F401

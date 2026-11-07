@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { api, type Health, type ShioriDocument } from './api'
+import { AskPage } from './components/AskPage'
 import { DocumentList } from './components/DocumentList'
 import { SearchPage } from './components/SearchPage'
 import { UploadZone } from './components/UploadZone'
@@ -8,13 +9,13 @@ import { UploadZone } from './components/UploadZone'
 const ACTIVE_POLL_MS = 1500 // while something is processing
 const IDLE_POLL_MS = 15000
 
-type Tab = 'library' | 'search'
+type Tab = 'ask' | 'search' | 'library'
 
 function App() {
   const [documents, setDocuments] = useState<ShioriDocument[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
-  const [tab, setTab] = useState<Tab>('library')
+  const [tab, setTab] = useState<Tab>('ask')
 
   const refresh = useCallback(async () => {
     try {
@@ -42,11 +43,11 @@ function App() {
   return (
     <div className="min-h-screen bg-shiori-50 text-stone-800">
       <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-6">
             <span className="text-xl font-bold">栞 Shiori</span>
             <nav className="flex gap-1 text-sm">
-              {(['library', 'search'] as const).map((t) => (
+              {(['ask', 'search', 'library'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -67,8 +68,10 @@ function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl space-y-6 px-6 py-8">
-        {tab === 'search' ? (
+      <main className="mx-auto max-w-5xl space-y-6 px-6 py-8">
+        {tab === 'ask' ? (
+          <AskPage documents={documents} />
+        ) : tab === 'search' ? (
           <SearchPage documents={documents} />
         ) : (
           <>

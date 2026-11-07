@@ -50,7 +50,9 @@ class OllamaLLM:
 
     async def stream(
         self, *, system: str, messages: list[Message], max_tokens: int = 4000
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | LLMResult]:
+        parts: list[str] = []
+        final: dict = {}
         try:
             async with (
                 httpx.AsyncClient(timeout=300) as client,
@@ -62,7 +64,20 @@ class OllamaLLM:
             ):
                 res.raise_for_status()
                 async for line in res.aiter_lines():
-                    if line and (text := json.loads(line).get("message", {}).get("content")):
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    if text := chunk.get("message", {}).get("content"):
+                        parts.append(text)
                         yield text
+                    if chunk.get("done"):
+                        final = chunk
         except httpx.HTTPError as err:
             raise LLMError(f"Ollama request failed: {err}", retryable=True) from err
+        yield LLMResult(
+            text="".join(parts),
+            model=self.model,
+            input_tokens=final.get("prompt_eval_count", 0),
+            output_tokens=final.get("eval_count", 0),
+            stop_reason=final.get("done_reason"),
+        )

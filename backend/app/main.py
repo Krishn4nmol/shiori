@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import documents, health, llm, search
+from app.api import conversations, documents, health, llm, search
 from app.config import get_settings
 from app.ingest.embedder import get_embedder
 from app.retrieval.reranker import get_reranker
@@ -47,3 +47,4 @@ app.include_router(health.router, prefix="/api")
 app.include_router(llm.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
+app.include_router(conversations.router, prefix="/api")

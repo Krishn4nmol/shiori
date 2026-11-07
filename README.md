@@ -4,7 +4,7 @@
 Japanese, and get answers that link to the exact page and passage. It comes with an evaluation
 dashboard that measures retrieval and answer quality.
 
-> Status: Phase 2 (hybrid search) done. See the roadmap below.
+> Status: Phase 3 (answers with citations) done. See the roadmap below.
 
 ## Stack
 
@@ -92,6 +92,20 @@ The Library page shows live progress. "View chunks" shows exactly what search wi
 Each result reports its vector rank, keyword rank, fused score, rerank score and per-stage
 timings, so ranking decisions can be inspected and later evaluated (Phase 6).
 
+## How answers work
+
+The **Ask** tab (`POST /api/chat`, streamed as Server-Sent Events):
+
+1. **Follow-ups are rewritten** into standalone questions using the conversation
+   ("and for how long?" → "How long were the dune sites measured?").
+2. **Hybrid search** finds up to 6 passages. If none pass the relevance cutoff, Shiori replies
+   that the papers don't answer this, **without calling the LLM** (no cost, nothing invented).
+3. **The LLM answers only from the numbered passages**, cites each claim as `[n]`, and replies
+   in the language of the question (prompts in `app/answer/prompts.py`). Passage text is treated
+   as data, not instructions.
+4. **The answer streams** to the browser. Citations become links to the source passage and PDF
+   page, and each answer records its sources, tokens, cost and per-stage timings.
+
 ## Tests and linting
 
 ```bash
@@ -104,7 +118,7 @@ cd frontend && npm run lint && npm run build
 - [x] **Phase 0**: Setup: repo, Docker, FastAPI, React, CI
 - [x] **Phase 1**: Ingestion: PDF parsing, chunking by heading, bge-m3 embeddings, background jobs
 - [x] **Phase 2**: Retrieval: hybrid search (pgvector + keyword index, merged with RRF) + reranker
-- [ ] **Phase 3**: Answers with citations: streaming, chat history, JP ⇄ EN
+- [x] **Phase 3**: Answers with citations: streaming, chat history, JP ⇄ EN
 - [ ] **Phase 4**: Frontend: library, chat, PDF viewer with citation highlights, auth
 - [ ] **Phase 5**: Observability: per-query traces (retrieval, prompt, tokens, cost, latency)
 - [ ] **Phase 6**: Evaluation dashboard: golden set, recall@k, MRR, faithfulness, experiments

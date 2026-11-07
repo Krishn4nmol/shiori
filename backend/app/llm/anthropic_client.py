@@ -66,7 +66,7 @@ class AnthropicLLM:
 
     async def stream(
         self, *, system: str, messages: list[Message], max_tokens: int = 4000
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | LLMResult]:
         try:
             async with self.client.messages.stream(
                 **self._params(system, messages, max_tokens)
@@ -83,6 +83,13 @@ class AnthropicLLM:
 
         if final.stop_reason == "refusal":
             raise LLMError(REFUSAL_MESSAGE)
+        yield LLMResult(
+            text="".join(block.text for block in final.content if block.type == "text"),
+            model=final.model,
+            input_tokens=final.usage.input_tokens,
+            output_tokens=final.usage.output_tokens,
+            stop_reason=final.stop_reason,
+        )
 
 
 def _is_missing_credentials(err: Exception) -> bool:

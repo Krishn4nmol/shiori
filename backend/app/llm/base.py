@@ -35,4 +35,7 @@ class LLMClient(Protocol):
 
     def stream(
         self, *, system: str, messages: list[Message], max_tokens: int = 4000
-    ) -> AsyncIterator[str]: ...
+    ) -> AsyncIterator[str | LLMResult]:
+        """Yields text deltas as they arrive, then one final LLMResult with the full text
+        and token usage."""
+        ...

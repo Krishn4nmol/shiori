@@ -1,4 +1,3 @@
-import math
 import uuid
 from collections.abc import AsyncIterator
 
@@ -8,12 +7,11 @@ from httpx import ASGITransport, AsyncClient
 from app.api.search import get_reranker_if_enabled
 from app.db import SessionLocal
 from app.ingest.embedder import get_embedder
-from app.ingest.pipeline import ingest_document
 from app.main import app
 from app.models import Document
 from app.retrieval.search import SearchFilters, rrf_fuse, search
 from app.retrieval.tokenize import search_tokens, tsquery
-from tests.pdf_factory import make_paper
+from tests.fakes import FixedReranker, ReverseReranker, TokenEmbedder
 
 # --- tokenizer and fusion (no database) -------------------------------------------------
 
@@ -45,68 +43,6 @@ def test_rrf_rewards_agreement_between_lists() -> None:
 
 
 # --- search against the database --------------------------------------------------------
-
-
-class TokenEmbedder:
-    """Fake embedder where texts sharing words get similar vectors (feature hashing)."""
-
-    dim = 1024
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        out = []
-        for text in texts:
-            vec = [0.0] * self.dim
-            for token in search_tokens(text):
-                vec[hash(token) % self.dim] += 1.0
-            norm = math.sqrt(sum(x * x for x in vec)) or 1.0
-            out.append([x / norm for x in vec])
-        return out
-
-
-class ReverseReranker:
-    """Scores passages in reverse of the order it receives them, to prove reranking applies."""
-
-    def __init__(self) -> None:
-        self.calls: list[int] = []
-
-    def score(self, query: str, passages: list[str]) -> list[float]:
-        self.calls.append(len(passages))
-        return [i / len(passages) for i in range(len(passages))]
-
-
-@pytest.fixture
-async def library(clean_db: None, tmp_path) -> dict[str, uuid.UUID]:
-    """Two ingested papers: the generated EN/JA dune paper and a short unrelated one."""
-    import pymupdf
-
-    other = tmp_path / "other.pdf"
-    pdf = pymupdf.open()
-    page = pdf.new_page()
-    page.insert_textbox(
-        pymupdf.Rect(72, 72, 520, 700),
-        "Kidney Disease\n\nChronic kidney disease patients were followed for five years. "
-        "Blood pressure and creatinine were recorded at each hospital visit. " * 3,
-        fontsize=10,
-    )
-    pdf.save(other)
-    pdf.close()
-
-    ids = {}
-    async with SessionLocal() as session:
-        for name, path in [("dunes", make_paper(tmp_path / "dunes.pdf")), ("kidney", other)]:
-            doc = Document(
-                title=name,
-                filename=path.name,
-                sha256=uuid.uuid4().hex,
-                file_path=str(path),
-                size_bytes=path.stat().st_size,
-            )
-            session.add(doc)
-            await session.commit()
-            ids[name] = doc.id
-    for doc_id in ids.values():
-        await ingest_document(SessionLocal, doc_id, TokenEmbedder())
-    return ids
 
 
 async def _search(query: str, **kwargs):
@@ -168,13 +104,6 @@ async def test_reranker_reorders_only_the_top_candidates(library: dict[str, uuid
 async def test_query_with_no_keywords_still_uses_vectors(library: dict[str, uuid.UUID]) -> None:
     result = await _search("what is the", reranker=None)
     assert all(h.keyword_rank is None for h in result.hits)
-
-
-class FixedReranker:
-    """Gives the first passage a strong score and the rest junk scores."""
-
-    def score(self, query: str, passages: list[str]) -> list[float]:
-        return [0.6] + [0.0004] * (len(passages) - 1)
 
 
 async def test_cutoff_hides_irrelevant_results(library: dict[str, uuid.UUID]) -> None:
