@@ -245,7 +245,8 @@ and the decisions they changed are in [docs/RESULTS.md](docs/RESULTS.md).
 | Answers, agent | | 78% | 98% (93% after one judge correction) | 100% | 6 / 6 | 100% | 9.1 s |
 
 Search scores are strict (the one passage holding the exact evidence quote must be found);
-answers can use any passage, so they score higher. The set is small and one question is worth
+answers can use any passage, so they score higher. On 24 LLM-generated questions, which are
+easier because they echo their passage, hit@5 is 96%. The set is small and one question is worth
 about 4 points. Add real questions from your lab before drawing finer conclusions.
 
 ## Accounts and security
