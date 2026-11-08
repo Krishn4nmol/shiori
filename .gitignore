@@ -21,3 +21,6 @@ data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Production secrets
+.env.production

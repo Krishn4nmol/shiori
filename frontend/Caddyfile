@@ -1,0 +1,25 @@
+# SITE_ADDRESS: a domain (e.g. shiori.example-lab.jp) for automatic HTTPS, or ":80" for plain
+# HTTP on a private network.
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000 {
+			# Stream answers (Server-Sent Events) as they are written.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

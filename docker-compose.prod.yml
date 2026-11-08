@@ -1,0 +1,102 @@
+# Production: everything in containers, only the web server is exposed.
+#
+#   cp .env.production.example .env.production    # fill in the secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# The first start downloads the search models (~4.5 GB) into the `models` volume.
+
+x-backend-env: &backend-env
+  ENVIRONMENT: prod
+  DATABASE_URL: postgresql+asyncpg://shiori:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/shiori
+  REDIS_URL: redis://redis:6379/0
+  NEO4J_URL: bolt://neo4j:7687
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+  SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY (python -c "import secrets; print(secrets.token_urlsafe(48))")}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
+  LLM_MODEL: ${LLM_MODEL:-gemini-3.5-flash-lite}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANSWER_MODE: ${ANSWER_MODE:-agent}
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: shiori
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: shiori
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shiori"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
+      interval: 10s
+      retries: 30
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment: *backend-env
+    volumes:
+      - uploads:/data
+      - models:/models
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      neo4j: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')\""]
+      interval: 15s
+      retries: 40
+      start_period: 60s
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment: *backend-env
+    volumes:
+      - uploads:/data
+      - models:/models
+    depends_on:
+      backend: { condition: service_healthy }  # migrations have run
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - caddydata:/data
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  neo4jdata:
+  uploads:
+  models:
+  caddydata:
