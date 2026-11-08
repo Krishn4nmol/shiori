@@ -135,7 +135,12 @@ async def search(
     result = SearchResult(hits=[], candidates=len(hits))
     if reranker is not None and hits:
         pool = hits[:rerank_candidates]
-        scores = await asyncio.to_thread(reranker.score, query, [h.text for h in pool])
+        # The same header the chunk was embedded with: a short passage often names its topic
+        # only in its heading ("2.3 Generator: BART").
+        texts = [
+            " / ".join(x for x in (h.document_title, h.section) if x) + "\n" + h.text for h in pool
+        ]
+        scores = await asyncio.to_thread(reranker.score, query, texts)
         for hit, score in zip(pool, scores, strict=True):
             hit.rerank_score = score  # small probabilities: keep full precision
         hits = sorted(pool, key=lambda h: h.rerank_score or 0.0, reverse=True)

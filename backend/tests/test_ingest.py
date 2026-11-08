@@ -49,6 +49,54 @@ def test_split_sentences_handles_both_languages() -> None:
 # --- PDF parser -------------------------------------------------------------------------
 
 
+def test_parser_ignores_rotated_margin_text(paper: Path) -> None:
+    text = " ".join(b.text for b in parse_pdf(paper).blocks)
+    assert "arXiv" not in text
+
+
+def test_wrapped_title_is_joined(tmp_path: Path) -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        pymupdf.Rect(72, 60, 400, 140),
+        "Retrieval-Augmented Generation for\nKnowledge-Intensive NLP Tasks",
+        fontsize=18,
+        fontname="hebo",
+    )
+    page.insert_textbox(pymupdf.Rect(72, 150, 520, 700), "Body text goes here. " * 40, fontsize=10)
+    doc.save(tmp_path / "t.pdf")
+    doc.close()
+    parsed = parse_pdf(tmp_path / "t.pdf")
+    assert parsed.title == "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    assert not any("Knowledge-Intensive" in b.text for b in parsed.blocks if b.kind == "heading")
+
+
+def test_control_characters_are_removed() -> None:
+    from app.ingest.pdf_parser import clean_text
+
+    assert clean_text("x" + chr(0) + "y" + chr(11) + "z 日本語" + chr(10)) == "xyz 日本語" + chr(10)
+    assert clean_text("Fact Veri\ufb01cation") == "Fact Verification"
+
+
+def test_two_column_page_is_read_column_by_column(tmp_path: Path) -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()  # 595 x 842
+    left = ["Left one starts here.", "Left two follows it.", "Left three ends it."]
+    right = ["Right one starts here.", "Right two follows it.", "Right three ends it."]
+    for i, (a, b) in enumerate(zip(left, right, strict=True)):
+        y = 100 + i * 120
+        page.insert_textbox(pymupdf.Rect(50, y, 280, y + 100), a * 4, fontsize=10)
+        page.insert_textbox(pymupdf.Rect(315, y, 545, y + 100), b * 4, fontsize=10)
+    doc.save(tmp_path / "cols.pdf")
+    doc.close()
+    text = " ".join(b.text for b in parse_pdf(tmp_path / "cols.pdf").blocks)
+    assert text.index("Left three") < text.index("Right one")
+
+
 def test_parser_finds_title_and_metadata(paper: Path) -> None:
     parsed = parse_pdf(paper)
     assert parsed.title == "Seasonal Change of Coastal Dunes"

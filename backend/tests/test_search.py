@@ -102,6 +102,23 @@ async def test_reranker_reorders_only_the_top_candidates(library: dict[str, uuid
     assert "rerank" in reranked.timings_ms
 
 
+async def test_reranker_sees_title_and_section(library: dict[str, uuid.UUID]) -> None:
+    seen: list[str] = []
+
+    class Recording:
+        def score(self, query: str, texts: list[str]) -> list[float]:
+            seen.extend(texts)
+            return [0.5] * len(texts)
+
+    plain = await _search("sand dunes vegetation", reranker=None, k=1)
+    await _search("sand dunes vegetation", reranker=Recording(), k=1, rerank_candidates=1)
+
+    top = plain.hits[0]
+    header, _, body = seen[0].partition("\n")
+    assert top.document_title in header
+    assert body == top.text
+
+
 async def test_query_with_no_keywords_still_uses_vectors(library: dict[str, uuid.UUID]) -> None:
     result = await _search("what is the", reranker=None)
     assert all(h.keyword_rank is None for h in result.hits)

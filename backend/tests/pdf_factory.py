@@ -35,6 +35,9 @@ def make_paper(path: Path) -> Path:
         page.insert_text((page.rect.width / 2, page.rect.height - 30), str(number), fontsize=8)
 
     p1 = doc[0]
+    # A vertical arXiv-style stamp in the margin, in a larger font than the title: real arXiv
+    # PDFs have one, and it must never become the title or body text.
+    p1.insert_text((30, 600), "arXiv:2611.01234v2  [cs.CL]  7 Nov 2026", fontsize=24, rotate=90)
     y = _write(p1, 70, "Seasonal Change of Coastal Dunes", 20, "hebo")
     y = _write(p1, y, "Abstract", 12, "hebo")
     y = _write(p1, y, LOREM * 2, 10)

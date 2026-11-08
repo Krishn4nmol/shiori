@@ -71,14 +71,20 @@ def parse_pdf(path: Path) -> ParsedDocument:
     title = _pick_title(meta.get("title"), lines, body_size)
     # The paper title is stored on the document; as a heading it would prefix every
     # section path on page 1 ("Title > Abstract").
-    for i, block in enumerate(blocks):
-        if (
-            block.kind == "heading"
-            and block.page == 1
-            and normalize(block.text) == normalize(title or "")
-        ):
-            del blocks[i]
+    # A wrapped title is several heading lines; drop the first run of them.
+    norm_title = normalize(title or "")
+    title_parts = [
+        i
+        for i, b in enumerate(blocks)
+        if b.kind == "heading" and b.page == 1 and norm_title and normalize(b.text) in norm_title
+    ]
+    run = title_parts[:1]
+    for i in title_parts[1:]:
+        if i != run[-1] + 1:
             break
+        run.append(i)
+    for i in reversed(run):
+        del blocks[i]
     return ParsedDocument(
         title=title,
         authors=(meta.get("author") or "").strip() or None,
@@ -87,21 +93,93 @@ def parse_pdf(path: Path) -> ParsedDocument:
     )
 
 
+# Control characters (NUL in math-heavy PDFs, for one) that Postgres or the UI can't store.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
+
+
+# Typographic ligatures (one character for "fi" in "verification") would break keyword search.
+_LIGATURES = str.maketrans(
+    {
+        "\ufb00": "ff",
+        "\ufb01": "fi",
+        "\ufb02": "fl",
+        "\ufb03": "ffi",
+        "\ufb04": "ffl",
+        "\ufb06": "st",
+    }
+)
+
+
+def clean_text(text: str) -> str:
+    return _CONTROL.sub("", text).translate(_LIGATURES)
+
+
+def _reading_order(blocks: list[dict], page_width: float) -> list[dict]:
+    """Order blocks for reading, column by column on two-column pages.
+
+    Full-width blocks (title, wide figures) split the page into bands; inside each band the
+    left column is read before the right one.
+    """
+    mid = page_width / 2
+    blocks = sorted(blocks, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    left = [b for b in blocks if b["bbox"][2] <= mid + 10]
+    right = [b for b in blocks if b["bbox"][0] >= mid - 10]
+    if len(left) < 3 or len(right) < 3:  # not a two-column page
+        return blocks
+    ordered: list[dict] = []
+    band: list[dict] = []
+    for b in blocks:
+        if b in left or b in right:
+            band.append(b)
+            continue
+        ordered += sorted(band, key=lambda x: (x["bbox"][0] >= mid - 10, x["bbox"][1]))
+        band = []
+        ordered.append(b)
+    ordered += sorted(band, key=lambda x: (x["bbox"][0] >= mid - 10, x["bbox"][1]))
+    return ordered
+
+
 def _page_lines(page: pymupdf.Page, page_no: int) -> list[_Line]:
     lines: list[_Line] = []
     data = page.get_text("dict", sort=True)
-    for block_no, block in enumerate(data["blocks"]):
-        if block.get("type") != 0:  # 0 = text, 1 = image
-            continue
+    text_blocks = [b for b in data["blocks"] if b.get("type") == 0]  # 0 = text, 1 = image
+    for block_no, block in enumerate(_reading_order(text_blocks, page.rect.width)):
         for line in block["lines"]:
-            spans = [s for s in line["spans"] if s["text"].strip()]
+            # Rotated text (e.g. the vertical arXiv stamp in the margin) is never body text.
+            dx, dy = line.get("dir", (1.0, 0.0))
+            if abs(dy) > 0.1 or dx < 0:
+                continue
+            spans = [s for s in line["spans"] if clean_text(s["text"]).strip()]
             if not spans:
                 continue
-            text = "".join(s["text"] for s in spans).strip()
+            text = clean_text(_join_spans(spans)).strip()
             size = max(s["size"] for s in spans)
             bold = all(s["flags"] & 16 or "Bold" in s["font"] for s in spans)
-            lines.append(_Line(text, round(size, 1), bold, page_no, block_no))
+            line_ = _Line(text, round(size, 1), bold, page_no, block_no)
+            prev = lines[-1] if lines else None
+            # "2.1" and "Models" are often separate lines of one block: one heading.
+            if prev and prev.block_no == block_no and _BARE_NUMBER.fullmatch(prev.text):
+                prev.text = f"{prev.text} {text}"
+                prev.bold = prev.bold and bold
+                continue
+            lines.append(line_)
     return lines
+
+
+_BARE_NUMBER = re.compile(r"(?:\d+|[IVX]+|[A-Z])(?:\.\d+)*\.?")
+
+
+def _join_spans(spans: list[dict]) -> str:
+    """Join spans, adding the space a PDF often encodes as a gap rather than a character."""
+    out = ""
+    for prev, span in zip([None, *spans], spans, strict=False):
+        text = span["text"]
+        if prev is not None and out and not out.endswith(" ") and not text.startswith(" "):
+            gap = span["bbox"][0] - prev["bbox"][2]
+            if gap > span["size"] * 0.2 and not (cjk_ratio(out[-1:]) or cjk_ratio(text[:1])):
+                out += " "
+        out += text
+    return out
 
 
 def _strip_running_headers(pages: list[list[_Line]]) -> list[list[_Line]]:
@@ -144,6 +222,8 @@ def _heading_level(line: _Line, body_size: float, toc: dict[tuple[str, int], int
     if (level := toc.get((normalize(text), line.page))) is not None:
         return level
 
+    if not re.search(r"[^\W\d_]", text):  # no letters: a number or value from a table
+        return 0
     is_cjk = cjk_ratio(text) > 0.2
     too_long = len(text) > (40 if is_cjk else 120) or len(text.split()) > 15
     if too_long or text.endswith((".", ",", "、", "，", ":", ";")) and not _NUMBERED.match(text):
@@ -209,4 +289,13 @@ def _pick_title(meta_title: str | None, lines: list[_Line], body_size: float) ->
     if not first_page:
         return None
     biggest = max(first_page, key=lambda line: line.size)
-    return biggest.text if biggest.size > body_size else None
+    if biggest.size <= body_size:
+        return None
+    # Long titles wrap: keep the following lines of the same block in the same font size.
+    start = first_page.index(biggest)
+    parts = [biggest.text]
+    for line in first_page[start + 1 : start + 4]:
+        if abs(line.size - biggest.size) > 0.5 or line.bold != biggest.bold:
+            break
+        parts.append(line.text)
+    return _join_lines(parts)
