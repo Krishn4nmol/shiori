@@ -17,7 +17,7 @@ from app.db import SessionLocal
 from app.graph.build import build_paper_graph
 from app.graph.extract import EXTRACT_SYSTEM, entity_key, extract_batch
 from app.graph.store import APP_NAMESPACE, GraphStore, get_graph_store
-from app.llm import LLMResult, Message
+from app.llm import LLMError, LLMResult, Message
 from app.main import app
 from app.models import Document
 from app.queue import get_queue
@@ -117,6 +117,28 @@ async def graph() -> AsyncIterator[GraphStore]:
 async def build_all(graph: GraphStore, library: dict[str, uuid.UUID], llm=None) -> None:
     for doc_id in library.values():
         await build_paper_graph(SessionLocal, doc_id, llm or ExtractLLM(), graph)
+
+
+async def test_build_waits_out_a_rate_limit(
+    graph: GraphStore, library: dict[str, uuid.UUID], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RateLimitedOnce(ExtractLLM):
+        limited = False
+
+        async def complete(self, **kwargs):
+            if not self.limited:
+                self.limited = True
+                raise LLMError("The free quota for this model is used up for now.")
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr("app.graph.build.RATE_LIMIT_WAITS", (0, 0))
+    llm = RateLimitedOnce()
+    await build_paper_graph(SessionLocal, library["dunes"], llm, graph)
+
+    assert llm.limited and llm.calls >= 1
+    async with SessionLocal() as session:
+        doc = await session.get(Document, library["dunes"])
+    assert doc.graph_status == "ready"
 
 
 async def test_build_merges_languages_and_counts(

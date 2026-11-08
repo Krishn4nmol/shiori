@@ -1,5 +1,6 @@
 """Builds one paper's part of the knowledge graph: passages in batches -> extraction -> Neo4j."""
 
+import asyncio
 import logging
 import uuid
 
@@ -13,6 +14,8 @@ from app.llm import LLMClient, LLMError
 from app.models import Chunk, Document
 
 log = logging.getLogger(__name__)
+
+RATE_LIMIT_WAITS = (30, 65)  # seconds; per-minute limits on free tiers reset within a minute
 
 
 async def build_paper_graph(
@@ -38,7 +41,8 @@ async def build_paper_graph(
         extraction = Extraction()
         for start in range(0, len(chunks), batch):
             part = chunks[start : start + batch]
-            extraction.merge(await extract_batch(llm, [(str(c.id), c.text) for c in part]))
+            passages = [(str(c.id), c.text) for c in part]
+            extraction.merge(await _extract_with_retry(llm, passages))
         await store.ensure_schema()
         await store.replace_paper(
             str(document_id), title, [(str(c.id), c.page_start, c.page_end) for c in chunks],
@@ -61,6 +65,19 @@ async def build_paper_graph(
         async with sessions() as session:
             await _set(session, document_id, graph_status="failed", graph_error=message[:2000])
         raise
+
+
+async def _extract_with_retry(llm: LLMClient, passages: list[tuple[str, str]]) -> Extraction:
+    """Wait out a per-minute rate limit; a daily limit still fails after the last wait."""
+    for wait in (*RATE_LIMIT_WAITS, None):
+        try:
+            return await extract_batch(llm, passages)
+        except LLMError as err:
+            if wait is None or "quota" not in str(err).lower():
+                raise
+            log.info("rate limited; retrying this batch in %d s", wait)
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 async def _set(session: AsyncSession, document_id: uuid.UUID, **values: object) -> None:
