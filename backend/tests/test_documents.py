@@ -24,6 +24,9 @@ class FakeQueue:
     async def enqueue_ingest(self, document_id: uuid.UUID) -> None:
         self.jobs.append(document_id)
 
+    async def enqueue_graph(self, document_id: uuid.UUID) -> None:
+        self.jobs.append(document_id)
+
 
 @pytest.fixture
 def queue() -> FakeQueue:

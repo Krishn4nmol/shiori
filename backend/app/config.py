@@ -18,9 +18,16 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://shiori:shiori@127.0.0.1:5432/shiori"
     redis_url: str = "redis://127.0.0.1:6379/0"
 
-    # LLM provider: "anthropic" (Anthropic API) or "ollama" (free, local)
-    llm_provider: Literal["anthropic", "ollama"] = "anthropic"
-    llm_model: str = "claude-haiku-5-5"
+    # LLM provider:
+    #   "openai"    any OpenAI-compatible API: Google Gemini (free key), Groq, OpenRouter,
+    #               or local Ollama. Set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL.
+    #   "anthropic" Anthropic API (paid)
+    #   "ollama"    local Ollama through its native API
+    # Default: Google Gemini's free tier.
+    llm_provider: Literal["openai", "anthropic", "ollama"] = "openai"
+    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    llm_api_key: str | None = None
+    llm_model: str = "gemini-3.5-flash-lite"
     # How hard the model thinks before answering: low | medium | high (Anthropic only)
     llm_effort: Literal["low", "medium", "high"] = "medium"
     anthropic_api_key: str | None = None
@@ -41,9 +48,14 @@ class Settings(BaseSettings):
     rerank_candidates: int = 12
     # bfloat16 halves reranking time on modern CPUs with the same ranking quality.
     reranker_bf16: bool = True
-    # Reranker scores below this mean "does not answer the question". Measured on real
-    # queries: right answers scored 0.05-0.8, unrelated passages below 0.001.
-    min_rerank_score: float = 0.01
+    # Reranker scores below this mean "does not answer the question". Chosen by evaluation:
+    # at 0.01 one real answer (a sentence buried in a long Japanese passage, scored 0.0005) was
+    # cut; 0.0003 kept every answer (correctness 89% -> 100%) while unrelated questions such
+    # as "What is the weather in Osaka?" (~0.00002) are still rejected without an LLM call.
+    min_rerank_score: float = 0.0003
+    # "agent": plan each question (details / search / read whole paper), see app/agent.
+    # "classic": always one search. Both are kept so evaluation can compare them.
+    answer_mode: Literal["agent", "classic"] = "agent"
     preload_models: bool = True  # load models at API startup instead of on first search
 
     # Ingestion
@@ -51,6 +63,20 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     chunk_target_tokens: int = 350
     chunk_overlap_tokens: int = 50
+
+    # Knowledge graph (Neo4j). Disable to run without it; the agent then skips graph questions.
+    graph_enabled: bool = True
+    neo4j_url: str = "bolt://127.0.0.1:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "shiori-graph"
+    graph_batch_passages: int = 4  # passages per extraction call (fewer calls on free tiers)
+
+    # Auth. SECRET_KEY signs session cookies: keep it secret, and stable across restarts
+    # (changing it logs everyone out). Generate one with:
+    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+    secret_key: str | None = None
+    session_days: int = 7
+    cookie_secure: bool = False  # set true when served over HTTPS
 
     cors_origins: list[str] = ["http://localhost:5173"]
 

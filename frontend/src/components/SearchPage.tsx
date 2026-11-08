@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { api, type SearchHit, type SearchMode, type SearchResponse, type ShioriDocument } from '../api'
+import { useOpenPdf } from './usePdfViewer'
 
 const EXAMPLES = ['What was measured, and at how many sites?', '鳥取砂丘で何を測定しましたか？']
 
@@ -164,6 +165,7 @@ export function SearchPage({ documents }: Props) {
 }
 
 function HitCard({ hit, rank }: { hit: SearchHit; rank: number }) {
+  const openPdf = useOpenPdf()
   const [open, setOpen] = useState(false)
   const pages = hit.page_start === hit.page_end ? `p. ${hit.page_start}` : `pp. ${hit.page_start}–${hit.page_end}`
 
@@ -176,14 +178,22 @@ function HitCard({ hit, rank }: { hit: SearchHit; rank: number }) {
           </p>
           <p className="mt-0.5 text-sm text-stone-600">
             {hit.section ?? 'No section'} ·{' '}
-            <a
-              href={api.fileUrl(hit.document_id, hit.page_start)}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              type="button"
+              onClick={() =>
+                openPdf({
+                  documentId: hit.document_id,
+                  title: hit.document_title,
+                  page: hit.page_start,
+                  pageEnd: hit.page_end,
+                  highlight: hit.text,
+                })
+              }
               className="text-shiori-700 hover:underline"
+              title="Open the PDF with this passage highlighted"
             >
-              {pages}
-            </a>{' '}
+              {pages} ↗
+            </button>{' '}
             · <span className="uppercase">{hit.language}</span>
           </p>
         </div>

@@ -18,8 +18,20 @@ def cjk_ratio(text: str) -> float:
 
 
 def detect_language(text: str) -> str:
-    """'ja' or 'en'. Good enough for routing; bge-m3 itself is multilingual."""
+    """'ja' or 'en' for passages. Good enough for routing; bge-m3 itself is multilingual."""
     return "ja" if cjk_ratio(text) > 0.2 else "en"
+
+
+def question_language(text: str) -> str:
+    """The language a question is asked in, which the answer should use.
+
+    English questions often quote Japanese terms ("What does 植生被覆率 mean here?"), so
+    the passage rule would call them Japanese. A question is English when it has more Latin
+    letters than Japanese characters.
+    """
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    cjk = len(_CJK.findall(text))
+    return "en" if latin > cjk else "ja"
 
 
 def estimate_tokens(text: str) -> int:

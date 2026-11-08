@@ -5,9 +5,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import CurrentUser
 from app.config import get_settings
 from app.db import get_session
 from app.ingest.embedder import Embedder, get_embedder
+from app.observability.traces import candidates_payload, record_trace
 from app.retrieval.reranker import Reranker, get_reranker
 from app.retrieval.search import Mode, SearchFilters, search
 
@@ -61,6 +63,7 @@ def get_reranker_if_enabled() -> Reranker | None:
 @router.post("/search", response_model=SearchResponse)
 async def search_chunks(
     body: SearchRequest,
+    user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     reranker: Annotated[Reranker | None, Depends(get_reranker_if_enabled)],
@@ -80,6 +83,19 @@ async def search_chunks(
         rerank_candidates=settings.rerank_candidates,
         min_rerank_score=min_score,
         filters=SearchFilters(document_ids=body.document_ids, language=body.language),
+    )
+    await record_trace(
+        kind="search",
+        user_id=user.id,
+        query=body.query,
+        search_query=body.query,
+        answered=bool(result.hits),
+        candidates=candidates_payload(result),
+        n_candidates=result.candidates,
+        filtered_out=result.filtered_out,
+        best_rerank_score=result.best_rerank_score,
+        latency_ms=result.timings_ms.get("total", 0.0),
+        timings_ms=result.timings_ms,
     )
     return SearchResponse(
         query=body.query,

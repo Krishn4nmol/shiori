@@ -57,6 +57,8 @@ class SearchResult:
     candidates: int = 0  # distinct chunks found before reranking
     filtered_out: int = 0  # reranked results dropped by the relevance cutoff
     best_rerank_score: float | None = None  # shown when everything was filtered out
+    # Every passage that reached the final ranking, before the cutoff (for traces)
+    considered: list[Hit] = field(default_factory=list)
 
 
 class _Timer:
@@ -86,34 +88,46 @@ async def search(
     rerank_candidates: int = 20,
     min_rerank_score: float | None = None,
     filters: SearchFilters | None = None,
+    extra_queries: list[str] | None = None,
 ) -> SearchResult:
+    """Search for `query`. With `extra_queries` (rephrasings, translations), every query is
+    searched, all result lists are merged with RRF ("RAG-Fusion"), and the reranker runs once,
+    against `query`: several queries cost little more than one."""
     filters = filters or SearchFilters()
     timer = _Timer()
     t = time.perf_counter()
+    queries = [query, *[q for q in dict.fromkeys(extra_queries or []) if q and q != query]]
 
-    vector_ranked: list[tuple[uuid.UUID, float]] = []
-    keyword_ranked: list[tuple[uuid.UUID, float]] = []
+    rankings: list[list[tuple[uuid.UUID, float]]] = []
+    best_vector: dict[uuid.UUID, tuple[int, float]] = {}  # best (rank, score) over queries
+    best_keyword: dict[uuid.UUID, tuple[int, float]] = {}
 
     if mode in ("hybrid", "vector"):
-        query_vector = (await asyncio.to_thread(embedder.embed, [query]))[0]
+        vectors = await asyncio.to_thread(embedder.embed, queries)
         t = timer.lap("embed", t)
-        vector_ranked = await _vector_search(session, query_vector, candidates, filters)
+        for vector in vectors:
+            ranked = await _vector_search(session, vector, candidates, filters)
+            rankings.append(ranked)
+            _keep_best(best_vector, ranked)
         t = timer.lap("vector", t)
 
     if mode in ("hybrid", "keyword"):
-        keyword_ranked = await _keyword_search(session, query, candidates, filters)
+        for q in queries:
+            ranked = await _keyword_search(session, q, candidates, filters)
+            rankings.append(ranked)
+            _keep_best(best_keyword, ranked)
         t = timer.lap("keyword", t)
 
-    fused = rrf_fuse([vector_ranked, keyword_ranked])
+    fused = rrf_fuse(rankings)
     hits = await _load_hits(session, [chunk_id for chunk_id, _ in fused])
     by_id = {hit.chunk_id: hit for hit in hits}
     for chunk_id, score in fused:
         if chunk_id in by_id:
             by_id[chunk_id].rrf_score = round(score, 6)
-    for rank, (chunk_id, score) in enumerate(vector_ranked, start=1):
+    for chunk_id, (rank, score) in best_vector.items():
         if chunk_id in by_id:
             by_id[chunk_id].vector_rank, by_id[chunk_id].vector_score = rank, round(score, 4)
-    for rank, (chunk_id, score) in enumerate(keyword_ranked, start=1):
+    for chunk_id, (rank, score) in best_keyword.items():
         if chunk_id in by_id:
             by_id[chunk_id].keyword_rank, by_id[chunk_id].keyword_score = rank, round(score, 4)
     t = timer.lap("fuse", t)
@@ -125,6 +139,7 @@ async def search(
         for hit, score in zip(pool, scores, strict=True):
             hit.rerank_score = score  # small probabilities: keep full precision
         hits = sorted(pool, key=lambda h: h.rerank_score or 0.0, reverse=True)
+        result.considered = hits
         result.best_rerank_score = hits[0].rerank_score
         if min_rerank_score:
             # Only the reranker's scores mean "does this answer the question?" well enough
@@ -135,8 +150,18 @@ async def search(
         timer.lap("rerank", t)
 
     result.hits = hits[:k]
+    if not result.considered:
+        result.considered = result.hits
     result.timings_ms = timer.total()
     return result
+
+
+def _keep_best(
+    best: dict[uuid.UUID, tuple[int, float]], ranked: list[tuple[uuid.UUID, float]]
+) -> None:
+    for rank, (chunk_id, score) in enumerate(ranked, start=1):
+        if chunk_id not in best or rank < best[chunk_id][0]:
+            best[chunk_id] = (rank, score)
 
 
 def rrf_fuse(rankings: list[list[tuple[uuid.UUID, float]]]) -> list[tuple[uuid.UUID, float]]:

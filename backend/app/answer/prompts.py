@@ -56,8 +56,41 @@ def format_sources(hits: list[Hit]) -> str:
     return "<sources>\n" + "\n".join(blocks) + "\n</sources>"
 
 
-def answer_user_message(question: str, hits: list[Hit]) -> str:
-    return f"{format_sources(hits)}\n\nQuestion: {question}"
+LANGUAGE_NAMES = {"en": "English", "ja": "Japanese"}
+
+
+# Extra instruction per question type (from the agent's plan).
+TASK_HINTS = {
+    "find_all": (
+        "The sources are the full text of the paper, in order. Go through every source and list "
+        "every item that matches the question, each with its citation. Do not stop after the "
+        "first few, and do not list items that do not match."
+    ),
+    "summary": (
+        "The sources are the paper's text in order. Summarize the whole paper: its purpose, "
+        "main content and conclusions, citing the sources."
+    ),
+    "compare": "Compare the papers point by point, and cite each paper's own sources.",
+    "details": "The sources are the papers' recorded details (title, authors, pages, ...).",
+    "relations": (
+        "Source 1 lists relations extracted from the papers into a knowledge graph; the other "
+        "sources are the passages they came from. Answer from them, cite the passages that "
+        "support each point, and say so if the relations do not answer the question."
+    ),
+}
+
+
+def answer_user_message(
+    question: str, hits: list[Hit], language: str = "en", question_type: str = "lookup"
+) -> str:
+    # Stated per question as well as in the system prompt: with Japanese sources, small models
+    # otherwise drift into Japanese for English questions (measured in evaluation runs).
+    reply_in = LANGUAGE_NAMES.get(language, "English")
+    hint = TASK_HINTS.get(question_type)
+    task = f"\n\n{hint}" if hint else ""
+    return (
+        f"{format_sources(hits)}\n\nQuestion: {question}{task}\n\nWrite the answer in {reply_in}."
+    )
 
 
 def rewrite_user_message(history: list[dict[str, str]], question: str) -> str:

@@ -6,3 +6,12 @@
   --color-shiori-500: #c2410c;
   --color-shiori-700: #9a3412;
 }
+
+/* Cited passage in the PDF viewer. The text layer is transparent over the page image,
+   so only the background shows. */
+.textLayer mark.shiori-hl {
+  background: rgb(250 204 21 / 0.45);
+  color: transparent;
+  border-radius: 2px;
+  padding: 0;
+}

@@ -4,7 +4,12 @@ import pytest
 
 from app.ingest.chunker import chunk_blocks
 from app.ingest.pdf_parser import Block, parse_pdf
-from app.ingest.text_utils import detect_language, estimate_tokens, split_sentences
+from app.ingest.text_utils import (
+    detect_language,
+    estimate_tokens,
+    question_language,
+    split_sentences,
+)
 from tests.pdf_factory import make_paper
 
 
@@ -19,6 +24,12 @@ def paper(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def test_detect_language() -> None:
     assert detect_language("Sand dunes change every season.") == "en"
     assert detect_language("鳥取砂丘は季節によって変化する。") == "ja"
+
+
+def test_question_language_handles_quoted_japanese() -> None:
+    assert question_language("What does the report mean by 草原化 (grassland conversion)?") == "en"
+    assert question_language("鳥取砂丘で何を測定しましたか？") == "ja"
+    assert question_language("「鳥取砂丘」の調査地点は何か所ですか") == "ja"
 
 
 def test_estimate_tokens_counts_japanese_characters() -> None:

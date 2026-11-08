@@ -3,15 +3,23 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, type Health, type ShioriDocument } from './api'
 import { AskPage } from './components/AskPage'
 import { DocumentList } from './components/DocumentList'
+import { EvaluationPage } from './components/EvaluationPage'
+import { GraphPage } from './components/GraphPage'
+import { InsightsPage } from './components/InsightsPage'
 import { SearchPage } from './components/SearchPage'
 import { UploadZone } from './components/UploadZone'
+import { useAuth } from './components/useAuth'
+import { UserMenu } from './components/UserMenu'
+import { UsersPage } from './components/UsersPage'
 
 const ACTIVE_POLL_MS = 1500 // while something is processing
 const IDLE_POLL_MS = 15000
 
-type Tab = 'ask' | 'search' | 'library'
+type Tab = 'ask' | 'search' | 'library' | 'graph' | 'insights' | 'evaluation' | 'users'
 
 function App() {
+  const { user } = useAuth()
+  const tabs: Tab[] = user.role === 'admin' ? ['ask', 'search', 'library', 'graph', 'insights', 'evaluation', 'users'] : ['ask', 'search', 'library', 'graph']
   const [documents, setDocuments] = useState<ShioriDocument[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
@@ -26,7 +34,9 @@ function App() {
     }
   }, [])
 
-  const active = documents.some((d) => d.status === 'pending' || d.status === 'processing')
+  const active = documents.some(
+    (d) => d.status === 'pending' || d.status === 'processing' || d.graph_status === 'building',
+  )
 
   useEffect(() => {
     void refresh()
@@ -47,7 +57,7 @@ function App() {
           <div className="flex items-center gap-6">
             <span className="text-xl font-bold">栞 Shiori</span>
             <nav className="flex gap-1 text-sm">
-              {(['ask', 'search', 'library'] as const).map((t) => (
+              {tabs.map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -61,10 +71,15 @@ function App() {
               ))}
             </nav>
           </div>
-          <span className="flex items-center gap-2 text-xs text-stone-500" title="API and database status">
-            <span className={`h-2 w-2 rounded-full ${dbOk ? 'bg-green-500' : 'bg-amber-500'}`} />
-            {health ? (dbOk ? 'Connected' : 'Database unavailable') : 'API unreachable'}
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-2 text-xs text-stone-500" title="API and database status">
+              <span className={`h-2 w-2 rounded-full ${dbOk ? 'bg-green-500' : 'bg-amber-500'}`} />
+              <span className="hidden md:inline">
+                {health ? (dbOk ? 'Connected' : 'Database unavailable') : 'API unreachable'}
+              </span>
+            </span>
+            <UserMenu />
+          </div>
         </div>
       </header>
 
@@ -73,6 +88,14 @@ function App() {
           <AskPage documents={documents} />
         ) : tab === 'search' ? (
           <SearchPage documents={documents} />
+        ) : tab === 'graph' ? (
+          <GraphPage documents={documents} />
+        ) : tab === 'insights' ? (
+          <InsightsPage />
+        ) : tab === 'evaluation' ? (
+          <EvaluationPage documents={documents} />
+        ) : tab === 'users' ? (
+          <UsersPage />
         ) : (
           <>
             <section>

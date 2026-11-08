@@ -45,7 +45,7 @@ class FixedReranker:
     """Gives the first passage a strong score and the rest junk scores."""
 
     def score(self, query: str, passages: list[str]) -> list[float]:
-        return [0.6] + [0.0004] * (len(passages) - 1)
+        return [0.6] + [0.00001] * (len(passages) - 1)  # junk: below any sensible cutoff
 
 
 class ScriptedLLM:

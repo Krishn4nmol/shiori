@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -10,15 +11,19 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import CurrentUser
 from app.config import get_settings
 from app.db import get_session
-from app.models import Chunk, Document, DocumentStatus
+from app.graph.store import GraphStore, get_graph_store
+from app.models import Chunk, Document, DocumentStatus, User, UserRole
 from app.queue import JobQueue, get_queue
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 Queue = Annotated[JobQueue, Depends(get_queue)]
+Graph = Annotated[GraphStore | None, Depends(get_graph_store)]
+log = logging.getLogger(__name__)
 
 
 class DocumentOut(BaseModel):
@@ -36,6 +41,11 @@ class DocumentOut(BaseModel):
     progress: int
     stage: str | None
     error: str | None
+    uploaded_by_id: uuid.UUID | None
+    graph_status: str
+    graph_entities: int
+    graph_relations: int
+    graph_error: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -60,7 +70,7 @@ class ChunkPage(BaseModel):
 
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def upload_document(
-    file: UploadFile, session: Session, queue: Queue, response: Response
+    file: UploadFile, user: CurrentUser, session: Session, queue: Queue, response: Response
 ) -> Document:
     """Upload a PDF. Processing happens in the background; poll the document for progress.
     Uploading a file that is already in the library returns the existing document (200)."""
@@ -89,6 +99,7 @@ async def upload_document(
         sha256=sha256,
         file_path=str(path),
         size_bytes=len(data),
+        uploaded_by_id=user.id,
     )
     session.add(doc)
     await session.commit()
@@ -132,12 +143,18 @@ async def get_document_file(document_id: uuid.UUID, session: Session) -> FileRes
 
 
 @router.post("/{document_id}/reingest", response_model=DocumentOut)
-async def reingest_document(document_id: uuid.UUID, session: Session, queue: Queue) -> Document:
+async def reingest_document(
+    document_id: uuid.UUID, user: CurrentUser, session: Session, queue: Queue, graph: Graph
+) -> Document:
     """Process the document again, e.g. after changing the chunking settings."""
     doc = await _get_or_404(session, document_id)
+    _check_can_modify(doc, user)
     if doc.status in (DocumentStatus.pending, DocumentStatus.processing):
         raise HTTPException(409, "This document is already being processed.")
     doc.status, doc.progress, doc.stage, doc.error = DocumentStatus.pending, 0, None, None
+    # New chunks get new ids, so the old graph would point at passages that no longer exist.
+    doc.graph_status, doc.graph_entities, doc.graph_relations = "none", 0, 0
+    await _remove_from_graph(graph, doc.id)
     await session.commit()
     await session.refresh(doc)
     await queue.enqueue_ingest(doc.id)
@@ -145,12 +162,31 @@ async def reingest_document(document_id: uuid.UUID, session: Session, queue: Que
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(document_id: uuid.UUID, session: Session) -> None:
+async def delete_document(
+    document_id: uuid.UUID, user: CurrentUser, session: Session, graph: Graph
+) -> None:
     doc = await _get_or_404(session, document_id)
+    _check_can_modify(doc, user)
+    await _remove_from_graph(graph, doc.id)
     path = Path(doc.file_path)
     await session.delete(doc)  # chunks are removed by ON DELETE CASCADE
     await session.commit()
     path.unlink(missing_ok=True)
+
+
+async def _remove_from_graph(graph: GraphStore | None, document_id: uuid.UUID) -> None:
+    if graph is None:
+        return
+    try:
+        await graph.delete_paper(str(document_id))
+    except Exception:  # the graph is optional; never block deleting a paper
+        log.exception("could not remove %s from the knowledge graph", document_id)
+
+
+def _check_can_modify(doc: Document, user: User) -> None:
+    """The library is shared, but only the uploader or an admin may change or delete a paper."""
+    if user.role != UserRole.admin and doc.uploaded_by_id != user.id:
+        raise HTTPException(403, "Only the person who uploaded this paper or an admin can do this.")
 
 
 async def _get_or_404(session: AsyncSession, document_id: uuid.UUID) -> Document:

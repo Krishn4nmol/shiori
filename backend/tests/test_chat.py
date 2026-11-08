@@ -107,7 +107,9 @@ async def test_answer_streams_with_sources_and_citations(
     call = llm.calls[-1]
     assert call["system"] == prompts.ANSWER_SYSTEM
     prompt = call["messages"][-1]["content"]
-    assert '<source id="1"' in prompt and prompt.endswith("Question: How many sites were measured?")
+    assert '<source id="1"' in prompt
+    assert "Question: How many sites were measured?" in prompt
+    assert prompt.endswith("Write the answer in English.")
 
 
 async def test_conversation_is_saved(client: AsyncClient) -> None:

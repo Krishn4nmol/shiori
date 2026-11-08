@@ -5,6 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.search import get_reranker_if_enabled
+from app.config import get_settings
 from app.db import SessionLocal
 from app.ingest.embedder import get_embedder
 from app.main import app
@@ -160,7 +161,7 @@ async def test_search_endpoint_applies_cutoff(
 ) -> None:
     app.dependency_overrides[get_reranker_if_enabled] = FixedReranker
     body = (await client.post("/api/search", json={"query": "dunes"})).json()
-    assert body["min_score"] == 0.01
+    assert body["min_score"] == get_settings().min_rerank_score
     assert len(body["hits"]) == 1 and body["filtered_out"] > 0
 
     everything = (await client.post("/api/search", json={"query": "dunes", "min_score": 0})).json()

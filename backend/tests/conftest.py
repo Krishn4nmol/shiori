@@ -3,6 +3,7 @@
 import asyncio
 import os
 import tempfile
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -14,7 +15,13 @@ _base_url = os.environ.get(
 os.environ["DATABASE_URL"] = _base_url.rsplit("/", 1)[0] + f"/{TEST_DB}"
 os.environ["ENVIRONMENT"] = "test"
 os.environ["STORAGE_DIR"] = tempfile.mkdtemp(prefix="shiori-test-")
-os.environ["ANTHROPIC_API_KEY"] = ""  # tests must never call the real API
+os.environ["ANTHROPIC_API_KEY"] = ""  # tests must never call a real LLM API
+os.environ["LLM_API_KEY"] = ""
+os.environ["ANSWER_MODE"] = "classic"  # agent tests switch it on explicitly
+os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-for-hs256-signing"
+
+# Every test runs as this user unless it uses the `real_auth` fixture.
+TEST_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 async def _prepare_database() -> None:
@@ -55,8 +62,70 @@ async def clean_db(database: None) -> AsyncIterator[None]:
     from app.db import engine
 
     async with engine.begin() as db:
-        await db.execute(text("TRUNCATE documents, chunks, conversations, messages CASCADE"))
+        await db.execute(
+            text(
+                "TRUNCATE users, documents, chunks, conversations, messages, traces, "
+                "eval_questions, eval_runs, eval_results CASCADE"
+            )
+        )
+        # The default test user must exist: papers and conversations reference it.
+        await db.execute(
+            text(
+                "INSERT INTO users (id, email, name, password_hash, role, is_active, "
+                "session_version) VALUES (:id, 'tester@lab.test', 'Tester', 'x', 'admin', "
+                "true, 0)"
+            ),
+            {"id": TEST_USER_ID},
+        )
     yield
+
+
+def _test_user():
+    from app.models import User, UserRole
+
+    return User(
+        id=TEST_USER_ID,
+        email="tester@lab.test",
+        name="Tester",
+        password_hash="x",
+        role=UserRole.admin,
+        is_active=True,
+        session_version=0,
+    )
+
+
+@pytest.fixture(autouse=True)
+def logged_in(request: pytest.FixtureRequest):
+    """Log every test in as the test user, except tests that use `real_auth`."""
+    from app.auth.deps import get_current_user
+    from app.auth.rate_limit import login_limiter
+    from app.evaluation import runner
+    from app.main import app
+
+    login_limiter.reset()
+    runner.RETRY_WAITS = (0, 0)  # never sleep on rate-limit retries in tests
+    if "real_auth" not in request.fixturenames:
+        app.dependency_overrides[get_current_user] = _test_user
+    # Never load the real embedding/reranker models (GBs to download in CI): tests that care
+    # about search install their own fakes, which replace these.
+    from app.api.search import get_reranker_if_enabled
+    from app.ingest.embedder import get_embedder
+    from tests.fakes import TokenEmbedder
+
+    app.dependency_overrides[get_embedder] = TokenEmbedder
+    app.dependency_overrides[get_reranker_if_enabled] = lambda: None
+    # No knowledge graph unless a test asks for one (tests then use the "test" namespace).
+    from app.graph.store import get_graph_store
+
+    app.dependency_overrides[get_graph_store] = lambda: None
+    yield
+    for dep in (get_current_user, get_embedder, get_reranker_if_enabled, get_graph_store):
+        app.dependency_overrides.pop(dep, None)
+
+
+@pytest.fixture
+def real_auth() -> None:
+    """Use real sessions (cookies) instead of the automatic test login."""
 
 
 # Shared fixtures. Imported last: they import app modules, which must see the settings above.

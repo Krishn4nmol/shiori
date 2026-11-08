@@ -1,8 +1,14 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkCjkFriendly from 'remark-cjk-friendly'
+import remarkGfm from 'remark-gfm'
+
+import { useOpenPdf } from './usePdfViewer'
 
 import {
   api,
   streamChat,
+  type AgentPlan,
   type ChatMessage,
   type Conversation,
   type ShioriDocument,
@@ -17,6 +23,7 @@ type UiMessage = Partial<ChatMessage> & {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  plan?: AgentPlan
 }
 
 type Props = { documents: ShioriDocument[] }
@@ -106,6 +113,8 @@ export function AskPage({ documents }: Props) {
             setActiveId(data.id)
             void loadConversations()
           }
+        } else if (event === 'plan') {
+          patchLast((m) => ({ ...m, plan: data }))
         } else if (event === 'sources') {
           patchLast((m) => ({ ...m, sources: data.sources, search_query: data.search_query }))
         } else if (event === 'token') {
@@ -195,7 +204,7 @@ export function AskPage({ documents }: Props) {
                 </p>
               </div>
             ) : (
-              <AssistantMessage key={m.key} message={m} />
+              <AssistantMessage key={m.key} message={m} conversationId={activeId} />
             ),
           )}
           <div ref={bottom} />
@@ -264,7 +273,13 @@ export function AskPage({ documents }: Props) {
   )
 }
 
-function AssistantMessage({ message }: { message: UiMessage }) {
+function AssistantMessage({
+  message,
+  conversationId,
+}: {
+  message: UiMessage
+  conversationId: string | null
+}) {
   const [focused, setFocused] = useState<number | null>(null)
   const sources = message.sources ?? []
   const cited = new Set(message.cited ?? [])
@@ -275,10 +290,11 @@ function AssistantMessage({ message }: { message: UiMessage }) {
 
   return (
     <article className="rounded-2xl rounded-bl-sm border border-stone-200 bg-white p-4 shadow-sm">
+      {message.plan && <PlanLine plan={message.plan} />}
       {message.content ? (
-        <div className="whitespace-pre-wrap leading-relaxed text-stone-800">
-          <CitedText text={message.content} sources={sources} onCite={setFocused} />
-          {message.streaming && <span className="ml-0.5 animate-pulse">▍</span>}
+        <div className="leading-relaxed text-stone-800">
+          <CitedMarkdown text={message.content} sources={sources} onCite={setFocused} />
+          {message.streaming && <span className="animate-pulse">▍</span>}
         </div>
       ) : message.streaming ? (
         <p className="text-sm text-stone-500">
@@ -308,6 +324,14 @@ function AssistantMessage({ message }: { message: UiMessage }) {
         </details>
       )}
 
+      {!message.streaming && !message.error && message.id && conversationId && (
+        <FeedbackButtons
+          conversationId={conversationId}
+          messageId={message.id}
+          initial={message.feedback ?? null}
+        />
+      )}
+
       {!message.streaming && message.timings_ms && (
         <p className="mt-3 text-[11px] text-stone-400">
           {[
@@ -326,7 +350,8 @@ function AssistantMessage({ message }: { message: UiMessage }) {
   )
 }
 
-function CitedText({
+/** Renders the answer's markdown (bold, lists, tables) with [n] citations as buttons. */
+function CitedMarkdown({
   text,
   sources,
   onCite,
@@ -335,37 +360,59 @@ function CitedText({
   sources: Source[]
   onCite: (n: number) => void
 }) {
-  const parts: ReactNode[] = []
-  let last = 0
-  for (const match of text.matchAll(CITATION)) {
-    parts.push(text.slice(last, match.index))
-    const numbers = match[1].split(/[\s,，、]+/).map(Number)
-    parts.push(
-      <Fragment key={match.index}>
-        {numbers.map((n) => {
-          const source = sources.find((s) => s.n === n)
-          return (
-            <button
-              key={n}
-              type="button"
-              onClick={() => onCite(n)}
-              title={source ? `${source.document_title}, p. ${source.page_start}` : `Source ${n}`}
-              className="mx-0.5 rounded bg-shiori-50 px-1 align-super text-[10px] font-semibold text-shiori-700 hover:bg-shiori-500 hover:text-white"
-            >
-              {n}
-            </button>
-          )
-        })}
-      </Fragment>,
-    )
-    last = (match.index ?? 0) + match[0].length
+  // Turn [1], [1, 2] and ［1］ into one markdown link per source: [1](#cite-1)[2](#cite-2)
+  const linked = text.replace(CITATION, (_, group: string) =>
+    group
+      .split(/[\s,，、]+/)
+      .map((n) => `[${n}](#cite-${n})`)
+      .join(''),
+  )
+  const components: Components = {
+    a: ({ href, children }) => {
+      const n = href?.startsWith('#cite-') ? Number(href.slice(6)) : null
+      if (n === null) {
+        return (
+          <a href={href} target="_blank" rel="noreferrer" className="text-shiori-700 underline">
+            {children}
+          </a>
+        )
+      }
+      const source = sources.find((s) => s.n === n)
+      return (
+        <button
+          type="button"
+          onClick={() => onCite(n)}
+          title={source ? `${source.document_title}, p. ${source.page_start}` : `Source ${n}`}
+          className="mx-0.5 rounded bg-shiori-50 px-1 align-super text-[10px] font-semibold text-shiori-700 hover:bg-shiori-500 hover:text-white"
+        >
+          {n}
+        </button>
+      )
+    },
+    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+    ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5">{children}</ul>,
+    ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5">{children}</ol>,
+    strong: ({ children }) => <strong className="font-semibold text-stone-900">{children}</strong>,
+    h1: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+    h2: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+    h3: ({ children }) => <p className="mb-1 font-semibold">{children}</p>,
+    table: ({ children }) => (
+      <table className="mb-2 w-full border-collapse text-sm [&_td]:border [&_td]:border-stone-200 [&_td]:p-1.5 [&_th]:border [&_th]:border-stone-200 [&_th]:bg-stone-50 [&_th]:p-1.5">
+        {children}
+      </table>
+    ),
+    code: ({ children }) => <code className="rounded bg-stone-100 px-1 text-[0.9em]">{children}</code>,
   }
-  parts.push(text.slice(last))
-  return <>{parts}</>
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkCjkFriendly]} components={components}>
+      {linked}
+    </ReactMarkdown>
+  )
 }
 
 function SourceCard({ source, cited, focused }: { source: Source; cited: boolean; focused: boolean }) {
   const ref = useRef<HTMLLIElement>(null)
+  const openPdf = useOpenPdf()
   const [expanded, setExpanded] = useState(false)
   const open = expanded || focused // clicking a citation opens its passage
 
@@ -388,14 +435,22 @@ function SourceCard({ source, cited, focused }: { source: Source; cited: boolean
         <span className="font-mono font-semibold text-shiori-700">[{source.n}]</span>
         <span className="font-medium text-stone-800">{source.document_title}</span>
         <span className="text-stone-500">{source.section ?? 'No section'}</span>
-        <a
-          href={api.fileUrl(source.document_id, source.page_start)}
-          target="_blank"
-          rel="noreferrer"
+        <button
+          type="button"
+          onClick={() =>
+            openPdf({
+              documentId: source.document_id,
+              title: source.document_title,
+              page: source.page_start,
+              pageEnd: source.page_end,
+              highlight: source.text,
+            })
+          }
           className="text-shiori-700 hover:underline"
+          title="Open the PDF with this passage highlighted"
         >
-          {pages}
-        </a>
+          {pages} ↗
+        </button>
         {!cited && <span className="text-stone-400">not cited</span>}
       </div>
       <p className={`mt-1 whitespace-pre-line text-stone-700 ${open ? '' : 'line-clamp-2'}`}>{source.text}</p>
@@ -405,3 +460,90 @@ function SourceCard({ source, cited, focused }: { source: Source; cited: boolean
     </li>
   )
 }
+
+/** 👍 / 👎 on an answer. A 👎 asks what was wrong; ratings show up in Insights. */
+function FeedbackButtons({
+  conversationId,
+  messageId,
+  initial,
+}: {
+  conversationId: string
+  messageId: string
+  initial: 1 | -1 | null
+}) {
+  const [value, setValue] = useState<1 | -1 | null>(initial)
+  const [asking, setAsking] = useState(false)
+  const [note, setNote] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  async function save(next: 1 | -1 | 0, text?: string) {
+    setError(null)
+    try {
+      await api.setFeedback(conversationId, messageId, next, text)
+      setValue(next === 0 ? null : next)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const button = (active: boolean) =>
+    `rounded px-1.5 py-0.5 text-sm ${active ? 'bg-shiori-50 ring-1 ring-shiori-500' : 'opacity-60 hover:opacity-100'}`
+  return (
+    <div className="mt-3 text-xs text-stone-500">
+      <div className="flex items-center gap-1">
+        <span className="mr-1">Was this helpful?</span>
+        <button type="button" aria-label="Helpful" aria-pressed={value === 1} className={button(value === 1)}
+          onClick={() => { setAsking(false); void save(value === 1 ? 0 : 1) }}>
+          👍
+        </button>
+        <button type="button" aria-label="Not helpful" aria-pressed={value === -1} className={button(value === -1)}
+          onClick={() => (value === -1 ? void save(0) : setAsking(true))}>
+          👎
+        </button>
+        {value !== null && !asking && <span className="ml-1">Thanks!</span>}
+      </div>
+      {asking && (
+        <form
+          className="mt-2 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setAsking(false)
+            void save(-1, note)
+          }}
+        >
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="What was wrong? (optional, e.g. missed an example, wrong page)"
+            className="min-w-0 flex-1 rounded border border-stone-300 px-2 py-1 text-stone-700 outline-none focus:border-shiori-500"
+            autoFocus
+          />
+          <button className="rounded bg-stone-800 px-3 py-1 text-white">Send</button>
+        </form>
+      )}
+      {error && <p className="mt-1 text-red-600">{error}</p>}
+    </div>
+  )
+}
+
+const PLAN_LABELS: Record<AgentPlan['question_type'], string> = {
+  details: 'Paper details',
+  lookup: 'Search',
+  find_all: 'Read the whole paper',
+  compare: 'Compare papers',
+  summary: 'Summary',
+  relations: 'Knowledge graph',
+}
+
+/** What the agent did before answering, e.g. "Read the whole paper · Read all 4 passages". */
+function PlanLine({ plan }: { plan: AgentPlan }) {
+  return (
+    <p className="mb-2 flex flex-wrap items-center gap-x-1.5 text-xs text-stone-500" title={`Understood as: ${plan.question}`}>
+      <span className="rounded bg-stone-100 px-1.5 py-0.5 font-medium text-stone-600">
+        {PLAN_LABELS[plan.question_type]}
+      </span>
+      {plan.steps.join(' · ')}
+    </p>
+  )
+}
+

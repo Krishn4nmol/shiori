@@ -19,5 +19,19 @@ services:
     ports:
       - "6379:6379"
 
+  # Knowledge graph (Phase 8). Browser UI: http://localhost:7474
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-shiori-graph}
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+
 volumes:
   pgdata:
+  neo4jdata:

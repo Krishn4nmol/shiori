@@ -15,14 +15,17 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.graph import AgentContext, agent_graph
 from app.answer import prompts
 from app.config import get_settings
+from app.graph.store import GraphStore
 from app.ingest.embedder import Embedder
-from app.ingest.text_utils import detect_language
+from app.ingest.text_utils import question_language
 from app.llm import LLMClient, LLMError, LLMResult, Message
 from app.llm.pricing import estimate_cost_usd
+from app.observability.traces import candidates_payload
 from app.retrieval.reranker import Reranker
-from app.retrieval.search import Hit, SearchFilters, search
+from app.retrieval.search import Hit, Mode, SearchFilters, SearchResult, search
 
 MAX_SOURCES = 6
 HISTORY_MESSAGES = 6  # last 3 question/answer pairs
@@ -44,10 +47,24 @@ class AnswerRecord:
 
 
 @dataclass
+class SearchOptions:
+    """Search settings for one answer. Defaults come from Settings; evaluation runs override
+    them to compare configurations."""
+
+    mode: Mode = "hybrid"
+    rerank: bool = True
+    min_rerank_score: float | None = None  # None: use Settings.min_rerank_score
+    candidates: int | None = None
+    rerank_candidates: int | None = None
+    agent: bool | None = None  # None: use Settings.answer_mode
+
+
+@dataclass
 class AnswerDeps:
     llm: LLMClient
     embedder: Embedder
     reranker: Reranker | None
+    graph: GraphStore | None = None
 
 
 async def answer_events(
@@ -56,8 +73,13 @@ async def answer_events(
     history: list[Message],
     deps: AnswerDeps,
     document_ids: list[uuid.UUID] | None = None,
+    options: SearchOptions | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     settings = get_settings()
+    opts = options or SearchOptions()
+    min_score = (
+        settings.min_rerank_score if opts.min_rerank_score is None else opts.min_rerank_score
+    )
     start = time.perf_counter()
     timings: dict[str, float] = {}
     usage = _Usage()
@@ -68,37 +90,69 @@ async def answer_events(
         return now
 
     t = start
-    language = detect_language(question)
+    language = question_language(question)
     query = question
+    retrieval: dict[str, Any] | None = None  # for the trace
+    question_type = "lookup"
     try:
-        # 1. Follow-ups ("and for how long?") need the conversation to be searchable.
-        if history:
-            rewritten = await deps.llm.complete(
-                system=prompts.REWRITE_SYSTEM,
-                messages=[
-                    {"role": "user", "content": prompts.rewrite_user_message(history, question)}
-                ],
-                max_tokens=1000,
+        use_agent = settings.answer_mode == "agent" if opts.agent is None else opts.agent
+        if use_agent:
+            # 1-2 (agent). Plan the question, then gather sources the way it needs.
+            ctx = AgentContext(
+                session=session, llm=deps.llm, embedder=deps.embedder,
+                reranker=deps.reranker if opts.rerank else None, mode=opts.mode,
+                min_rerank_score=min_score,
+                candidates=opts.candidates or settings.search_candidates,
+                rerank_candidates=opts.rerank_candidates or settings.rerank_candidates,
+                document_ids=document_ids, graph=deps.graph,
+            )  # fmt: skip
+            state = await agent_graph.ainvoke(
+                {"question": question, "history": history}, context=ctx
             )
-            usage.add(rewritten)
-            query = rewritten.text.strip() or question
-            t = lap("rewrite", t)
+            for call in ctx.llm_calls:
+                usage.add(call)
+            timings.update(ctx.timings_ms)
+            t = time.perf_counter()
+            plan, result = state["plan"], state["result"]
+            query, question_type = plan.question, plan.type
+            yield {"type": "plan", **plan.describe(), "steps": state.get("steps", [])}
+        else:
+            # 1. Follow-ups ("and for how long?") need the conversation to be searchable.
+            if history:
+                rewritten = await deps.llm.complete(
+                    system=prompts.REWRITE_SYSTEM,
+                    messages=[
+                        {"role": "user", "content": prompts.rewrite_user_message(history, question)}
+                    ],
+                    max_tokens=1000,
+                )
+                usage.add(rewritten)
+                query = rewritten.text.strip() or question
+                t = lap("rewrite", t)
 
-        # 2. Retrieve, with the relevance cutoff so weak matches never reach the model.
-        result = await search(
-            session,
-            query,
-            embedder=deps.embedder,
-            reranker=deps.reranker,
-            k=MAX_SOURCES,
-            candidates=settings.search_candidates,
-            rerank_candidates=settings.rerank_candidates,
-            min_rerank_score=settings.min_rerank_score,
-            filters=SearchFilters(document_ids=document_ids),
-        )
+            # 2. Retrieve, with the relevance cutoff so weak matches never reach the model.
+            result = await search(
+                session,
+                query,
+                embedder=deps.embedder,
+                reranker=deps.reranker if opts.rerank else None,
+                k=MAX_SOURCES,
+                mode=opts.mode,
+                candidates=opts.candidates or settings.search_candidates,
+                rerank_candidates=opts.rerank_candidates or settings.rerank_candidates,
+                min_rerank_score=min_score,
+                filters=SearchFilters(document_ids=document_ids),
+            )
+            t = lap("retrieval", t)
         hits = result.hits
         sources = [_source_payload(n, hit) for n, hit in enumerate(hits, start=1)]
-        t = lap("retrieval", t)
+        timings.update({f"search_{k}": v for k, v in result.timings_ms.items() if k != "total"})
+        retrieval = {
+            "candidates": candidates_payload(result),
+            "n_candidates": result.candidates,
+            "filtered_out": result.filtered_out,
+            "best_rerank_score": result.best_rerank_score,
+        }
         yield {"type": "sources", "sources": sources, "search_query": query}
 
         # 3. Nothing relevant: say so without calling the model (no cost, no guessing).
@@ -106,13 +160,18 @@ async def answer_events(
             text = prompts.NOT_FOUND[language]
             yield {"type": "token", "text": text}
             timings["total"] = round((time.perf_counter() - start) * 1000, 1)
-            yield _done(AnswerRecord(text, [], [], query, *usage.totals(), timings))
+            yield _done(
+                AnswerRecord(text, [], [], query, *usage.totals(), timings), retrieval, result
+            )
             return
 
         # 4. Stream the answer.
         messages: list[Message] = [
             *history,
-            {"role": "user", "content": prompts.answer_user_message(question, hits)},
+            {
+                "role": "user",
+                "content": prompts.answer_user_message(question, hits, language, question_type),
+            },
         ]
         first_token = True
         final: LLMResult | None = None
@@ -131,21 +190,32 @@ async def answer_events(
         lap("generation", t)
         timings["total"] = round((time.perf_counter() - start) * 1000, 1)
 
+        cited = extract_citations(final.text, len(sources))
+        cited_ids = {sources[n - 1]["chunk_id"] for n in cited}
+        for candidate in retrieval["candidates"]:
+            candidate["cited"] = candidate["chunk_id"] in cited_ids
         yield _done(
             AnswerRecord(
                 content=final.text,
                 sources=sources,
-                cited=extract_citations(final.text, len(sources)),
+                cited=cited,
                 search_query=query,
                 model=final.model,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 cost_usd=usage.cost_usd,
                 timings_ms=timings,
-            )
+            ),
+            retrieval,
+            result,
         )
     except LLMError as err:
-        yield {"type": "error", "message": str(err)}
+        timings["total"] = round((time.perf_counter() - start) * 1000, 1)
+        yield {
+            "type": "error",
+            "message": str(err),
+            "trace": {"retrieval": retrieval, "search_query": query, "timings_ms": timings},
+        }
 
 
 def extract_citations(text: str, n_sources: int) -> list[int]:
@@ -173,8 +243,16 @@ def _source_payload(n: int, hit: Hit) -> dict[str, Any]:
     }
 
 
-def _done(record: AnswerRecord) -> dict[str, Any]:
-    return {"type": "done", "record": asdict(record)}
+def _done(
+    record: AnswerRecord, retrieval: dict[str, Any] | None, result: SearchResult
+) -> dict[str, Any]:
+    # search_result is for in-process callers (evaluation); the API does not send it.
+    return {
+        "type": "done",
+        "record": asdict(record),
+        "retrieval": retrieval,
+        "search_result": result,
+    }
 
 
 class _Usage:
