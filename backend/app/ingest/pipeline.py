@@ -5,7 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
@@ -20,6 +20,28 @@ log = logging.getLogger(__name__)
 
 class IngestError(Exception):
     """A problem with the document itself, shown to the user as-is."""
+
+
+INTERRUPTED = "Interrupted by a restart. Please try again."
+
+
+async def mark_interrupted_jobs(sessions: async_sessionmaker[AsyncSession]) -> None:
+    """At startup: the job queue does not survive a restart, so unfinished jobs are gone.
+
+    Left as they are, these papers would look busy forever and could not be retried.
+    """
+    async with sessions() as session:
+        await session.execute(
+            update(Document)
+            .where(Document.status.in_((DocumentStatus.pending, DocumentStatus.processing)))
+            .values(status=DocumentStatus.failed, error=INTERRUPTED)
+        )
+        await session.execute(
+            update(Document)
+            .where(Document.graph_status == "building")
+            .values(graph_status="failed", graph_error=INTERRUPTED)
+        )
+        await session.commit()
 
 
 async def ingest_document(

@@ -17,6 +17,7 @@ from app.db import SessionLocal
 from app.graph.build import build_paper_graph
 from app.graph.extract import EXTRACT_SYSTEM, entity_key, extract_batch
 from app.graph.store import APP_NAMESPACE, GraphStore, get_graph_store
+from app.ingest.pipeline import mark_interrupted_jobs
 from app.llm import LLMError, LLMResult, Message
 from app.main import app
 from app.models import Document
@@ -139,6 +140,24 @@ async def test_build_waits_out_a_rate_limit(
     async with SessionLocal() as session:
         doc = await session.get(Document, library["dunes"])
     assert doc.graph_status == "ready"
+
+
+async def test_jobs_cut_off_by_a_restart_can_be_retried(library: dict[str, uuid.UUID]) -> None:
+    async with SessionLocal() as session:
+        building = await session.get(Document, library["dunes"])
+        building.graph_status = "building"
+        processing = await session.get(Document, library["kidney"])
+        processing.status = "processing"
+        await session.commit()
+
+    await mark_interrupted_jobs(SessionLocal)
+
+    async with SessionLocal() as session:
+        building = await session.get(Document, library["dunes"])
+        processing = await session.get(Document, library["kidney"])
+    assert building.graph_status == "failed" and building.status == "ready"
+    assert "restart" in building.graph_error
+    assert processing.status == "failed" and "restart" in processing.error
 
 
 async def test_build_merges_languages_and_counts(

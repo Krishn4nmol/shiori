@@ -21,8 +21,10 @@ from app.api import (
 )
 from app.auth.deps import get_current_user
 from app.config import get_settings
+from app.db import SessionLocal
 from app.evaluation.runner import mark_interrupted_runs
 from app.ingest.embedder import get_embedder
+from app.ingest.pipeline import mark_interrupted_jobs
 from app.retrieval.reranker import get_reranker
 
 settings = get_settings()
@@ -43,6 +45,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     task = None
     if settings.environment != "test":
         await mark_interrupted_runs()
+        await mark_interrupted_jobs(SessionLocal)
     if settings.preload_models and settings.environment != "test":
         task = asyncio.create_task(asyncio.to_thread(_preload_models))
     yield
