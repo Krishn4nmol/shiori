@@ -139,7 +139,7 @@ points, so small differences between rows are not meaningful.
   Cypher templates with parameters.
 - **Observability**: every question writes a trace (plan, every passage considered with its
   ranks and scores, cutoff decisions, tokens, cost, per-stage timings, prompt version).
-- **Tests**: 147 backend tests (Postgres and Neo4j in CI, fake models so no downloads) and
+- **Tests**: 149 backend tests (Postgres and Neo4j in CI, fake models so no downloads) and
   frontend unit tests. Neo4j tests run in their own namespace, never touching real data.
 - **Resilience**: evaluation runs survive client disconnects; runs cut off by a restart are
   marked failed at the next start.
